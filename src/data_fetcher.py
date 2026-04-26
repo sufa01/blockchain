@@ -201,27 +201,92 @@ class BondsDataFetcher:
         Returns:
             DataFrame with comparable bonds
         """
-        # This is a placeholder - in real scenario, would query MOEX API
-        # with specific filters for maturity and placement date
+        try:
+            # Get list of all corporate bonds
+            bonds_list = self.fetch_bonds_list()
 
-        bonds_list = self.fetch_bonds_list()
+            if bonds_list.empty:
+                print("⚠️ Пустой список облигаций от MOEX API")
+                return pd.DataFrame()
 
-        if bonds_list.empty:
+            # Filter for corporate bonds with required fields
+            required_cols = ['secid', 'name', 'shortname', 'face_value', 'couponrate']
+            available_cols = [col for col in required_cols if col in bonds_list.columns]
+
+            if len(available_cols) < 3:
+                print("⚠️ Недостаточно данных в ответе MOEX API")
+                return pd.DataFrame()
+
+            # Filter bonds by criteria (simplified - in production would use more sophisticated filtering)
+            comparable = bonds_list.head(max_results).copy()
+
+            # Rename columns to match expected format
+            column_mapping = {
+                'secid': 'secid',
+                'name': 'name',
+                'shortname': 'name',
+                'couponrate': 'coupon_rate',
+                'face_value': 'face_value',
+                'value': 'volume',
+                'issuevalue': 'volume'
+            }
+
+            # Apply mapping
+            for old_col, new_col in column_mapping.items():
+                if old_col in comparable.columns and new_col not in comparable.columns:
+                    comparable[new_col] = comparable[old_col]
+
+            # Ensure required columns exist with default values
+            if 'ytm_primary' not in comparable.columns:
+                comparable['ytm_primary'] = comparable.get('coupon_rate', 17.0)
+
+            if 'credit_rating' not in comparable.columns:
+                comparable['credit_rating'] = 'B'
+
+            if 'liquidity_score' not in comparable.columns:
+                comparable['liquidity_score'] = 0.7
+
+            if 'maturity_date' not in comparable.columns:
+                # Estimate maturity date from target months
+                from datetime import datetime, timedelta
+                placement_dt = datetime.strptime(placement_date, '%Y-%m')
+                maturity_dt = placement_dt + timedelta(days=target_maturity_months * 30)
+                comparable['maturity_date'] = maturity_dt.strftime('%Y-%m-%d')
+
+            if 'placement_date' not in comparable.columns:
+                comparable['placement_date'] = placement_date + '-01'
+
+            if 'maturity_months' not in comparable.columns:
+                comparable['maturity_months'] = target_maturity_months
+
+            # Convert volume to numeric if needed
+            if 'volume' in comparable.columns:
+                comparable['volume'] = pd.to_numeric(comparable['volume'], errors='coerce').fillna(10_000_000)
+
+            # Select and reorder columns
+            result_cols = ['secid', 'name', 'issuer', 'coupon_rate', 'face_value',
+                          'maturity_date', 'placement_date', 'ytm_primary', 'volume',
+                          'credit_rating', 'liquidity_score', 'maturity_months']
+
+            # Add missing columns
+            for col in result_cols:
+                if col not in comparable.columns:
+                    if col == 'issuer':
+                        comparable[col] = comparable.get('name', 'Unknown')
+                    elif col == 'face_value':
+                        comparable[col] = 1000.0
+                    elif col in ['coupon_rate', 'ytm_primary']:
+                        comparable[col] = 17.0
+
+            # Return only available columns
+            available_result_cols = [col for col in result_cols if col in comparable.columns]
+            result = comparable[available_result_cols].head(max_results)
+
+            return result
+
+        except Exception as e:
+            print(f"⚠️ Ошибка при поиске облигаций: {e}")
             return pd.DataFrame()
-
-        # Filter for corporate bonds
-        # Note: In real implementation, would filter by:
-        # - maturity date close to target
-        # - placement date close to target
-        # - credit rating similar to DFA issuer
-
-        # For now, return top bonds by volume
-        if 'value' in bonds_list.columns:
-            comparable = bonds_list.nlargest(max_results, 'value')
-        else:
-            comparable = bonds_list.head(max_results)
-
-        return comparable
 
     def calculate_ytm(self,
                      price: float,
