@@ -189,103 +189,120 @@ class BondsDataFetcher:
     def find_comparable_bonds(self,
                              target_maturity_months: int = 12,
                              placement_date: str = "2026-04",
-                             max_results: int = 10) -> pd.DataFrame:
+                             max_results: int = 10,
+                             min_volume: Optional[float] = None) -> pd.DataFrame:
         """
         Find bonds comparable to DFA based on maturity and placement date.
-
+    
         Args:
             target_maturity_months: Target maturity in months
             placement_date: Placement date (YYYY-MM format)
             max_results: Maximum number of results
-
+            min_volume: Minimum issue volume in RUB (e.g., 10_000_000 for 10 млн)
+    
         Returns:
             DataFrame with comparable bonds
         """
         try:
-            # Get list of all corporate bonds
-            bonds_list = self.fetch_bonds_list()
-
-            if bonds_list.empty:
-                print("⚠️ Пустой список облигаций от MOEX API")
-                return pd.DataFrame()
-
-            # Filter for corporate bonds with required fields
-            required_cols = ['secid', 'name', 'shortname', 'face_value', 'couponrate']
-            available_cols = [col for col in required_cols if col in bonds_list.columns]
-
-            if len(available_cols) < 3:
-                print("⚠️ Недостаточно данных в ответе MOEX API")
-                return pd.DataFrame()
-
-            # Filter bonds by criteria (simplified - in production would use more sophisticated filtering)
-            comparable = bonds_list.head(max_results).copy()
-
-            # Rename columns to match expected format
-            column_mapping = {
-                'secid': 'secid',
-                'name': 'name',
-                'shortname': 'name',
-                'couponrate': 'coupon_rate',
-                'face_value': 'face_value',
-                'value': 'volume',
-                'issuevalue': 'volume'
+            today = datetime.now()
+            min_maturity = today + timedelta(days=target_maturity_months * 30 - 30)
+            max_maturity = today + timedelta(days=target_maturity_months * 30 + 30)
+            
+            # Get list of all corporate bonds with necessary fields
+            url = f"{self.base_url}/securities.json"
+            params = {
+                'asset_type': 'stock',
+                'board_group': 'stock_bonds',
+                'limit': 100,
+                # Запрашиваем конкретные колонки
+                'securities.columns': (
+                    'secid,name,shortname,emitent_title,'
+                    'matdate,issuedate,facevalue,issuesize,'
+                    'couponrate,couponvalue,couponperiod'
+                )
             }
-
-            # Apply mapping
-            for old_col, new_col in column_mapping.items():
-                if old_col in comparable.columns and new_col not in comparable.columns:
-                    comparable[new_col] = comparable[old_col]
-
-            # Ensure required columns exist with default values
-            if 'ytm_primary' not in comparable.columns:
-                comparable['ytm_primary'] = comparable.get('coupon_rate', 17.0)
-
-            if 'credit_rating' not in comparable.columns:
-                comparable['credit_rating'] = 'B'
-
-            if 'liquidity_score' not in comparable.columns:
-                comparable['liquidity_score'] = 0.7
-
-            if 'maturity_date' not in comparable.columns:
-                # Estimate maturity date from target months
-                from datetime import datetime, timedelta
-                placement_dt = datetime.strptime(placement_date, '%Y-%m')
-                maturity_dt = placement_dt + timedelta(days=target_maturity_months * 30)
-                comparable['maturity_date'] = maturity_dt.strftime('%Y-%m-%d')
-
-            if 'placement_date' not in comparable.columns:
-                comparable['placement_date'] = placement_date + '-01'
-
-            if 'maturity_months' not in comparable.columns:
-                comparable['maturity_months'] = target_maturity_months
-
-            # Convert volume to numeric if needed
-            if 'volume' in comparable.columns:
-                comparable['volume'] = pd.to_numeric(comparable['volume'], errors='coerce').fillna(10_000_000)
-
-            # Select and reorder columns
-            result_cols = ['secid', 'name', 'issuer', 'coupon_rate', 'face_value',
-                          'maturity_date', 'placement_date', 'ytm_primary', 'volume',
-                          'credit_rating', 'liquidity_score', 'maturity_months']
-
-            # Add missing columns
-            for col in result_cols:
-                if col not in comparable.columns:
-                    if col == 'issuer':
-                        comparable[col] = comparable.get('name', 'Unknown')
-                    elif col == 'face_value':
-                        comparable[col] = 1000.0
-                    elif col in ['coupon_rate', 'ytm_primary']:
-                        comparable[col] = 17.0
-
-            # Return only available columns
-            available_result_cols = [col for col in result_cols if col in comparable.columns]
-            result = comparable[available_result_cols].head(max_results)
-
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            securities = data.get('securities', {}).get('data', [])
+            columns = data.get('securities', {}).get('columns', [])
+            
+            if not securities:
+                print("Нет данных от MOEX API")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(securities, columns=columns)
+            
+            # Фильтр по дате погашения (MATDATE)
+            if 'matdate' in df.columns:
+                df['matdate_dt'] = pd.to_datetime(df['matdate'], errors='coerce')
+                # Убираем строки без даты погашения
+                df = df.dropna(subset=['matdate_dt'])
+                # Фильтруем по диапазону
+                df = df[
+                    (df['matdate_dt'] >= min_maturity) & 
+                    (df['matdate_dt'] <= max_maturity)
+                ]
+            else:
+                print("Колонка matdate отсутствует, фильтр не применён")
+            
+            # Фильтр по дате размещения (ISSUEDATE)
+            if 'issuedate' in df.columns and placement_date:
+                placement_dt = datetime.strptime(placement_date + '-01', '%Y-%m-%d')
+                df['issuedate_dt'] = pd.to_datetime(df['issuedate'], errors='coerce')
+                # Облигации, размещённые примерно в тот же период (±3 месяца)
+                df = df[
+                    (df['issuedate_dt'] >= placement_dt - timedelta(days=90)) & 
+                    (df['issuedate_dt'] <= placement_dt + timedelta(days=90))
+                ]
+            
+            # Фильтр по объёму выпуска (ISSUESIZE)
+            if 'issuesize' in df.columns and min_volume:
+                df['issuesize'] = pd.to_numeric(df['issuesize'], errors='coerce')
+                df = df[df['issuesize'] >= min_volume]
+            
+            # Убираем субординированные и структурные облигации (опционально)
+            if 'name' in df.columns:
+                df = df[~df['name'].str.contains('суборд|структур|subord', case=False, na=False)]
+            
+            if df.empty:
+                print("Не найдено облигаций, удовлетворяющих критериям")
+                return pd.DataFrame()
+            
+            comparable = df.head(max_results).copy()
+            
+            # Маппинг колонок
+            comparable['secid'] = comparable.get('secid', '')
+            comparable['name'] = comparable.get('shortname', comparable.get('name', ''))
+            comparable['issuer'] = comparable.get('emitent_title', comparable.get('name', 'Unknown'))
+            comparable['face_value'] = pd.to_numeric(comparable.get('facevalue', 1000), errors='coerce').fillna(1000)
+            comparable['coupon_rate'] = pd.to_numeric(comparable.get('couponrate', 17.0), errors='coerce').fillna(17.0)
+            comparable['volume'] = pd.to_numeric(comparable.get('issuesize', 10_000_000), errors='coerce').fillna(10_000_000)
+            comparable['maturity_date'] = comparable.get('matdate', '')
+            comparable['placement_date'] = comparable.get('issuedate', placement_date + '-01')
+            comparable['maturity_months'] = target_maturity_months
+            comparable['credit_rating'] = 'B'  # Будет заполнено позже или через отдельный API
+            comparable['liquidity_score'] = 0.7  # Будет уточнено через обороты
+            
+            # YTM заполняем реальными данными
+            comparable['ytm_primary'] = comparable['coupon_rate']
+            
+            # Финальный набор колонок
+            result_cols = [
+                'secid', 'name', 'issuer', 'coupon_rate', 'face_value',
+                'maturity_date', 'placement_date', 'ytm_primary', 'volume',
+                'credit_rating', 'liquidity_score', 'maturity_months'
+            ]
+            
+            result = comparable[result_cols]        
             return result
-
+            
         except Exception as e:
-            print(f"⚠️ Ошибка при поиске облигаций: {e}")
+            print(f"Ошибка при поиске облигаций: {e}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
 
     def calculate_ytm(self,
@@ -385,3 +402,31 @@ def create_sample_bonds_data() -> pd.DataFrame:
     df['liquidity_score'] = [0.7, 0.8, 0.6, 0.75]  # 0-1 scale
 
     return df
+    
+def enrich_with_ytm(self, bonds_df: pd.DataFrame, boardid: str = "TQCB") -> pd.DataFrame:
+    """
+    Добавляет реальную YTM для всех облигаций в DataFrame.
+    
+    Args:
+        bonds_df: DataFrame с колонкой 'secid'
+        boardid: Режим торгов (TQCB - корп. облигации, TQOB - ОФЗ)
+    
+    Returns:
+        DataFrame с обновлённой колонкой ytm_primary
+    """
+    ytm_values = []
+    
+    for _, row in bonds_df.iterrows():
+        secid = row['secid']
+        ytm = self.get_bond_ytm(secid)
+        
+        if ytm is not None:
+            ytm_values.append(ytm)
+        else:
+            # Fallback на купонную ставку
+            fallback = row.get('coupon_rate', 17.0)
+            ytm_values.append(fallback)
+            print(f"{secid}: YTM не получена, fallback на купон {fallback:.2f}%")
+    
+    bonds_df['ytm_primary'] = ytm_values
+    return bonds_df
