@@ -145,119 +145,119 @@ class BondsDataFetcher:
         bonds_df['ytm_primary'] = ytm_values
         return bonds_df
 
-        def find_comparable_bonds(self,
-                                 target_maturity_months: int = 12,
-                                 placement_date: str = "2026-04",
-                                 max_results: int = 10,
-                                 min_volume: Optional[float] = None) -> pd.DataFrame:
-            """Find bonds comparable to DFA with filtering."""
-            try:
-                today = datetime.now()
-                min_maturity = today + timedelta(days=target_maturity_months * 30 - 60)
-                max_maturity = today + timedelta(days=target_maturity_months * 30 + 60)
-
-                # Правильный запрос к MOEX: ТОЛЬКО облигации, ТОЛЬКО TQCB
-                url = f"{self.base_url}/engines/stock/markets/bonds/boards/TQCB/securities.json"
-                params = {
-                    'securities.columns': (
-                        'SECID,SECNAME,SHORTNAME,EMITENT_TITLE,'
-                        'MATDATE,ISSUEDATE,FACEVALUE,ISSUESIZE,'
-                        'COUPONRATE,COUPONVALUE,COUPONPERIOD'
-                    ),
-                    'marketdata.columns': (
-                        'SECID,YIELD,YIELDDATE,DURATION,LAST'
-                    )
-                }
-
-                response = self.session.get(url, params=params, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-
-                # Парсим securities
-                securities = data.get('securities', {}).get('data', [])
-                sec_columns = data.get('securities', {}).get('columns', [])
-
-                # Парсим marketdata (YTM)
-                marketdata = data.get('marketdata', {}).get('data', [])
-                mkt_columns = data.get('marketdata', {}).get('columns', [])
-
-                if not securities:
-                    print("⚠️ MOEX API: нет данных по облигациям TQCB")
-                    return pd.DataFrame()
-
-                df = pd.DataFrame(securities, columns=sec_columns)
-                df_mkt = pd.DataFrame(marketdata, columns=mkt_columns) if marketdata else pd.DataFrame()
-
-                print(f"📊 MOEX API: получено {len(df)} облигаций (TQCB)")
-
-                # Объединяем с рыночными данными (YTM)
-                if not df_mkt.empty and 'SECID' in df_mkt.columns and 'YIELD' in df_mkt.columns:
-                    df = df.merge(df_mkt[['SECID', 'YIELD']], on='SECID', how='left')
-                else:
-                    df['YIELD'] = None
-
-                # Фильтр по дате погашения
-                if 'MATDATE' in df.columns:
-                    df['matdate_dt'] = pd.to_datetime(df['MATDATE'], errors='coerce')
-                    df = df.dropna(subset=['matdate_dt'])
-                    df = df[(df['matdate_dt'] >= min_maturity) & (df['matdate_dt'] <= max_maturity)]
-                    print(f"✅ После фильтра по сроку погашения: {len(df)} облигаций")
-
-                # Фильтр по дате размещения
-                if 'ISSUEDATE' in df.columns and placement_date:
-                    placement_dt = datetime.strptime(placement_date + '-01', '%Y-%m-%d')
-                    df['issuedate_dt'] = pd.to_datetime(df['ISSUEDATE'], errors='coerce')
-                    df = df[(df['issuedate_dt'] >= placement_dt - timedelta(days=180)) &
-                            (df['issuedate_dt'] <= placement_dt + timedelta(days=180))]
-                    print(f"✅ После фильтра по дате размещения: {len(df)} облигаций")
-
-                # Фильтр по объёму
-                if 'ISSUESIZE' in df.columns and min_volume:
-                    df['ISSUESIZE'] = pd.to_numeric(df['ISSUESIZE'], errors='coerce')
-                    df = df[df['ISSUESIZE'] >= min_volume]
-                    print(f"✅ После фильтра по объёму (≥{min_volume:,.0f} ₽): {len(df)} облигаций")
-
-                if df.empty:
-                    print("⚠️ Нет облигаций после фильтрации")
-                    return pd.DataFrame()
-
-                # Формируем результат
-                comparable = df.head(max_results).copy()
-
-                result = pd.DataFrame()
-                result['secid'] = comparable['SECID']
-                result['name'] = comparable.get('SHORTNAME', comparable.get('SECNAME', ''))
-                result['issuer'] = comparable.get('EMITENT_TITLE', 'Unknown')
-                result['face_value'] = pd.to_numeric(comparable.get('FACEVALUE', 1000), errors='coerce').fillna(1000)
-                result['coupon_rate'] = pd.to_numeric(comparable.get('COUPONRATE', 0), errors='coerce').fillna(0)
-                result['volume'] = pd.to_numeric(comparable.get('ISSUESIZE', 0), errors='coerce').fillna(0)
-                result['maturity_date'] = comparable.get('MATDATE', '')
-                result['placement_date'] = comparable.get('ISSUEDATE', '')
-                result['maturity_months'] = target_maturity_months
-                result['credit_rating'] = 'B'
-                result['liquidity_score'] = 0.7
-
-                # YTM из реальных данных или купон
-                if 'YIELD' in comparable.columns:
-                    result['ytm_primary'] = pd.to_numeric(comparable['YIELD'], errors='coerce')
-                    mask = result['ytm_primary'].isna()
-                    result.loc[mask, 'ytm_primary'] = result.loc[mask, 'coupon_rate']
-                    real_ytm_count = (~result['ytm_primary'].isna()).sum()
-                    print(f"📈 YTM получена для {real_ytm_count} облигаций из API")
-                else:
-                    result['ytm_primary'] = result['coupon_rate']
-
-                # Убираем строки без coupon_rate
-                result = result[result['coupon_rate'] > 0]
-
-                print(f"✅ Итого: {len(result)} сопоставимых облигаций")
-                return result
-
-            except Exception as e:
-                print(f"❌ Ошибка MOEX API: {e}")
-                import traceback
-                traceback.print_exc()
+    def find_comparable_bonds(self,
+                             target_maturity_months: int = 12,
+                             placement_date: str = "2026-04",
+                             max_results: int = 10,
+                             min_volume: Optional[float] = None) -> pd.DataFrame:
+        """Find bonds comparable to DFA with filtering."""
+        try:
+            today = datetime.now()
+            min_maturity = today + timedelta(days=target_maturity_months * 30 - 60)
+            max_maturity = today + timedelta(days=target_maturity_months * 30 + 60)
+    
+            # Правильный запрос к MOEX: ТОЛЬКО облигации, ТОЛЬКО TQCB
+            url = f"{self.base_url}/engines/stock/markets/bonds/boards/TQCB/securities.json"
+            params = {
+                'securities.columns': (
+                    'SECID,SECNAME,SHORTNAME,EMITENT_TITLE,'
+                    'MATDATE,ISSUEDATE,FACEVALUE,ISSUESIZE,'
+                    'COUPONRATE,COUPONVALUE,COUPONPERIOD'
+                ),
+                'marketdata.columns': (
+                    'SECID,YIELD,YIELDDATE,DURATION,LAST'
+                )
+            }
+    
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+    
+            # Парсим securities
+            securities = data.get('securities', {}).get('data', [])
+            sec_columns = data.get('securities', {}).get('columns', [])
+    
+            # Парсим marketdata (YTM)
+            marketdata = data.get('marketdata', {}).get('data', [])
+            mkt_columns = data.get('marketdata', {}).get('columns', [])
+    
+            if not securities:
+                print("⚠️ MOEX API: нет данных по облигациям TQCB")
                 return pd.DataFrame()
+    
+            df = pd.DataFrame(securities, columns=sec_columns)
+            df_mkt = pd.DataFrame(marketdata, columns=mkt_columns) if marketdata else pd.DataFrame()
+    
+            print(f"📊 MOEX API: получено {len(df)} облигаций (TQCB)")
+    
+            # Объединяем с рыночными данными (YTM)
+            if not df_mkt.empty and 'SECID' in df_mkt.columns and 'YIELD' in df_mkt.columns:
+                df = df.merge(df_mkt[['SECID', 'YIELD']], on='SECID', how='left')
+            else:
+                df['YIELD'] = None
+    
+            # Фильтр по дате погашения
+            if 'MATDATE' in df.columns:
+                df['matdate_dt'] = pd.to_datetime(df['MATDATE'], errors='coerce')
+                df = df.dropna(subset=['matdate_dt'])
+                df = df[(df['matdate_dt'] >= min_maturity) & (df['matdate_dt'] <= max_maturity)]
+                print(f"✅ После фильтра по сроку погашения: {len(df)} облигаций")
+    
+            # Фильтр по дате размещения
+            if 'ISSUEDATE' in df.columns and placement_date:
+                placement_dt = datetime.strptime(placement_date + '-01', '%Y-%m-%d')
+                df['issuedate_dt'] = pd.to_datetime(df['ISSUEDATE'], errors='coerce')
+                df = df[(df['issuedate_dt'] >= placement_dt - timedelta(days=180)) &
+                        (df['issuedate_dt'] <= placement_dt + timedelta(days=180))]
+                print(f"✅ После фильтра по дате размещения: {len(df)} облигаций")
+    
+            # Фильтр по объёму
+            if 'ISSUESIZE' in df.columns and min_volume:
+                df['ISSUESIZE'] = pd.to_numeric(df['ISSUESIZE'], errors='coerce')
+                df = df[df['ISSUESIZE'] >= min_volume]
+                print(f"✅ После фильтра по объёму (≥{min_volume:,.0f} ₽): {len(df)} облигаций")
+    
+            if df.empty:
+                print("⚠️ Нет облигаций после фильтрации")
+                return pd.DataFrame()
+    
+            # Формируем результат
+            comparable = df.head(max_results).copy()
+    
+            result = pd.DataFrame()
+            result['secid'] = comparable['SECID']
+            result['name'] = comparable.get('SHORTNAME', comparable.get('SECNAME', ''))
+            result['issuer'] = comparable.get('EMITENT_TITLE', 'Unknown')
+            result['face_value'] = pd.to_numeric(comparable.get('FACEVALUE', 1000), errors='coerce').fillna(1000)
+            result['coupon_rate'] = pd.to_numeric(comparable.get('COUPONRATE', 0), errors='coerce').fillna(0)
+            result['volume'] = pd.to_numeric(comparable.get('ISSUESIZE', 0), errors='coerce').fillna(0)
+            result['maturity_date'] = comparable.get('MATDATE', '')
+            result['placement_date'] = comparable.get('ISSUEDATE', '')
+            result['maturity_months'] = target_maturity_months
+            result['credit_rating'] = 'B'
+            result['liquidity_score'] = 0.7
+    
+            # YTM из реальных данных или купон
+            if 'YIELD' in comparable.columns:
+                result['ytm_primary'] = pd.to_numeric(comparable['YIELD'], errors='coerce')
+                mask = result['ytm_primary'].isna()
+                result.loc[mask, 'ytm_primary'] = result.loc[mask, 'coupon_rate']
+                real_ytm_count = (~result['ytm_primary'].isna()).sum()
+                print(f"📈 YTM получена для {real_ytm_count} облигаций из API")
+            else:
+                result['ytm_primary'] = result['coupon_rate']
+    
+            # Убираем строки без coupon_rate
+            result = result[result['coupon_rate'] > 0]
+    
+            print(f"✅ Итого: {len(result)} сопоставимых облигаций")
+            return result
+    
+        except Exception as e:
+            print(f"❌ Ошибка MOEX API: {e}")
+            import traceback
+            traceback.print_exc()
+            return pd.DataFrame()
 
     def calculate_ytm(self,
                      price: float,
