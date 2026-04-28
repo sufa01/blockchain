@@ -228,9 +228,18 @@ class BondsDataFetcher:
             result['secid'] = comparable['SECID']
             result['name'] = comparable.get('SHORTNAME', comparable.get('SECNAME', ''))
             result['issuer'] = comparable.get('EMITENT_TITLE', 'Unknown')
-            result['face_value'] = pd.to_numeric(comparable.get('FACEVALUE', 1000), errors='coerce').fillna(1000)
-            result['coupon_rate'] = pd.to_numeric(comparable.get('COUPONRATE', 0), errors='coerce').fillna(0)
-            result['volume'] = pd.to_numeric(comparable.get('ISSUESIZE', 0), errors='coerce').fillna(0)
+            if 'FACEVALUE' in comparable.columns:
+                result['face_value'] = pd.to_numeric(comparable['FACEVALUE'], errors='coerce').fillna(1000)
+            else:
+                result['face_value'] = 1000
+            if 'COUPONRATE' in comparable.columns:
+                result['coupon_rate'] = pd.to_numeric(comparable['COUPONRATE'], errors='coerce').fillna(0)
+            else:
+                result['coupon_rate'] = 0
+            if 'ISSUESIZE' in comparable.columns:
+                result['volume'] = pd.to_numeric(comparable['ISSUESIZE'], errors='coerce').fillna(0)
+            else:
+                result['volume'] = 0
             result['maturity_date'] = comparable.get('MATDATE', '')
             result['placement_date'] = comparable.get('ISSUEDATE', '')
             result['maturity_months'] = target_maturity_months
@@ -247,8 +256,7 @@ class BondsDataFetcher:
             else:
                 result['ytm_primary'] = result['coupon_rate']
     
-            # Убираем строки без coupon_rate
-            result = result[result['coupon_rate'] > 0]
+            result = result[result['ytm_primary'] > 0]
     
             print(f"✅ Итого: {len(result)} сопоставимых облигаций")
             return result
